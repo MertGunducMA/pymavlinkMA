@@ -257,8 +257,9 @@ class OilRigGuidance:
         return distance, bearing_deg
 
     def set_guided_waypoint(self, lat, lon, alt):
-        """Send vehicle to specified waypoint using position and velocity control."""
-        print(f"Setting target position: lat={lat}, lon={lon}, alt={alt}")
+        """Send vehicle to specified waypoint using position control."""
+        print("\n=== Starting Waypoint Navigation ===")
+        print(f"Target position: lat={lat:.6f}, lon={lon:.6f}, alt={alt:.1f}m")
         
         # Convert lat/lon to int for mavlink message (degrees * 1e7)
         lat_int = int(lat * 1e7)
@@ -270,7 +271,7 @@ class OilRigGuidance:
             print("Failed to set GUIDED mode for waypoint")
             return False
 
-        # Calculate bearing and distance to target
+        # Calculate bearing to target
         current_pos = self.get_current_position()
         distance, bearing = self.get_distance_bearing(
             current_pos['lat'],
@@ -278,102 +279,102 @@ class OilRigGuidance:
             lat,
             lon
         )
+        print("\nInitial Position:")
+        print(f"Current: lat={current_pos['lat']:.6f}, lon={current_pos['lon']:.6f}, alt={current_pos['relative_alt']:.1f}m")
         print(f"Distance to target: {distance:.1f}m, Bearing: {bearing:.1f}°")
 
-        # Set target position with velocity control
+        # Set type mask for position control only
+        # Ignore velocity, acceleration, and yaw rate
         type_mask = (
+            mavutil.mavlink.POSITION_TARGET_TYPEMASK_VX_IGNORE |
+            mavutil.mavlink.POSITION_TARGET_TYPEMASK_VY_IGNORE |
+            mavutil.mavlink.POSITION_TARGET_TYPEMASK_VZ_IGNORE |
             mavutil.mavlink.POSITION_TARGET_TYPEMASK_AX_IGNORE |
             mavutil.mavlink.POSITION_TARGET_TYPEMASK_AY_IGNORE |
             mavutil.mavlink.POSITION_TARGET_TYPEMASK_AZ_IGNORE |
             mavutil.mavlink.POSITION_TARGET_TYPEMASK_YAW_RATE_IGNORE
         )
 
-        # Send command with both position and velocity
-        print("Sending position target command...")
+        # Send command with position only
+        print("\nSending position target command...")
         self.master.mav.set_position_target_global_int_send(
             0,                      # timestamp (0 for immediate)
             self.master.target_system,  # target system
             self.master.target_component,  # target component
             mavutil.mavlink.MAV_FRAME_GLOBAL_RELATIVE_ALT_INT,  # frame
-            type_mask,              # type mask (use pos and vel)
+            type_mask,              # type mask (use pos only)
             lat_int,               # latitude (degrees * 1e7)
             lon_int,               # longitude (degrees * 1e7)
-            alt_int/1000.0,        # altitude (meters, converted from mm)
-            2.0,                   # vx (m/s)
-            2.0,                   # vy (m/s)
-            0.0,                   # vz (m/s)
+            alt,                   # altitude (meters)
+            0.0,                   # vx (ignored)
+            0.0,                   # vy (ignored)
+            0.0,                   # vz (ignored)
             0, 0, 0,               # acceleration (ignored)
             bearing * 0.0174533,   # yaw (radians)
             0                      # yaw_rate (ignored)
         )
 
-        # Wait a moment for the command to be processed
-        time.sleep(2)
-
-        # Verify the vehicle is moving to the target
-        start_time = time.time()
-        timeout = 20  # seconds to wait for movement to begin
-        movement_detected = False
+        # Monitor progress
         last_distance = distance
+        last_print_time = time.time()
+        command_send_time = time.time()
         
-        print("\nMonitoring movement...")
-        while time.time() - start_time < timeout:
-            current_pos = self.get_current_position()
-            current_distance, current_bearing = self.get_distance_bearing(
-                current_pos['lat'],
-                current_pos['lon'],
-                lat,
-                lon
-            )
-            
-            # Calculate movement
-            distance_change = last_distance - current_distance
-            last_distance = current_distance
-            
-            print(f"\rDistance: {current_distance:.1f}m, Change: {distance_change:.1f}m, Bearing: {current_bearing:.1f}°", end='')
-            
-            # Check if we're moving towards the target
-            if distance_change > 0.5:  # Moving at least 0.5 meters closer
-                movement_detected = True
-                print("\nVehicle is moving towards target")
-                break
-                
-            # If we're very close to target, consider it reached
-            if current_distance < 5:  # Within 5 meters
-                print("\nReached target position")
-                return True
-                
-            # Send the command again every 5 seconds if no movement
-            if (time.time() - start_time) % 5 < 0.1:
-                print("\nResending position command...")
-                self.master.mav.set_position_target_global_int_send(
-                    0, self.master.target_system, self.master.target_component,
-                    mavutil.mavlink.MAV_FRAME_GLOBAL_RELATIVE_ALT_INT,
-                    type_mask, lat_int, lon_int, alt_int/1000.0,
-                    2.0, 2.0, 0.0, 0, 0, 0,
-                    bearing * 0.0174533, 0
+        print("\nMonitoring movement to target...")
+        try:
+            while True:
+                current_pos = self.get_current_position()
+                current_distance, current_bearing = self.get_distance_bearing(
+                    current_pos['lat'],
+                    current_pos['lon'],
+                    lat,
+                    lon
                 )
-            
-            time.sleep(1)
-        
-        if not movement_detected:
-            print("\nVehicle not responding to position command")
+                
+                # Calculate movement
+                distance_change = last_distance - current_distance
+                last_distance = current_distance
+                
+                # Update progress every second
+                current_time = time.time()
+                if current_time - last_print_time >= 1.0:
+                    print("\nPosition Update:")
+                    print(f"Current: lat={current_pos['lat']:.6f}, lon={current_pos['lon']:.6f}, alt={current_pos['relative_alt']:.1f}m")
+                    print(f"Target:  lat={lat:.6f}, lon={lon:.6f}, alt={alt:.1f}m")
+                    print(f"Distance: {current_distance:.1f}m, Change: {distance_change:.1f}m/s")
+                    last_print_time = current_time
+                
+                # Check if we've reached the target (within 2 meters)
+                if current_distance < 2:
+                    print("\n=== Target Position Reached ===")
+                    print(f"Final position: lat={current_pos['lat']:.6f}, lon={current_pos['lon']:.6f}, alt={current_pos['relative_alt']:.1f}m")
+                    print("Waiting for approach alignment...")
+                    return True
+                    
+                # Resend command every 3 seconds to ensure it's maintained
+                if current_time - command_send_time >= 3.0:
+                    self.master.mav.set_position_target_global_int_send(
+                        0, self.master.target_system, self.master.target_component,
+                        mavutil.mavlink.MAV_FRAME_GLOBAL_RELATIVE_ALT_INT,
+                        type_mask, lat_int, lon_int, alt,
+                        0.0, 0.0, 0.0, 0, 0, 0,
+                        bearing * 0.0174533, 0
+                    )
+                    command_send_time = current_time
+                
+                time.sleep(0.1)  # Small sleep to prevent CPU overload
+                
+        except KeyboardInterrupt:
+            print("\n=== Operation Cancelled by User ===")
             return False
-            
-        print("\nWaypoint command accepted, continuing to target")
-        return True
 
     def approach_helipad(self, helipad_lat, helipad_lon, approach_alt=100, offset_distance=200):
         """
         Approach the helipad GPS location and stop at specified offset.
-        
-        Args:
-            helipad_lat (float): Helipad latitude in degrees
-            helipad_lon (float): Helipad longitude in degrees
-            approach_alt (float): Approach altitude in meters AGL
-            offset_distance (float): Distance to stop from helipad in meters
         """
-        print(f"Starting approach to helipad at {helipad_lat}, {helipad_lon}")
+        print("\n=== Starting Helipad Approach ===")
+        print(f"Helipad position: lat={helipad_lat:.6f}, lon={helipad_lon:.6f}")
+        print(f"Approach altitude: {approach_alt}m")
+        print(f"Offset distance: {offset_distance}m")
         
         # Ensure we're in GUIDED mode
         if not self.set_mode('GUIDED'):
@@ -382,7 +383,8 @@ class OilRigGuidance:
             
         # Get current position
         current_pos = self.get_current_position()
-        print(f"Current position: {current_pos['lat']}, {current_pos['lon']}, alt: {current_pos['relative_alt']}m")
+        print("\nInitial Position:")
+        print(f"Current: lat={current_pos['lat']:.6f}, lon={current_pos['lon']:.6f}, alt={current_pos['relative_alt']:.1f}m")
         
         # Calculate distance and bearing to helipad
         distance, bearing = self.get_distance_bearing(
@@ -395,8 +397,8 @@ class OilRigGuidance:
         
         # If we're closer than the offset distance, move away to safe distance
         if distance < offset_distance:
-            print("Too close to helipad, moving to safe distance")
-            # TODO: Implement backoff logic
+            print("\nWarning: Too close to helipad, need to move to safe distance")
+            # TODO: Implement backoff logic if needed
             return False
             
         # Calculate approach waypoint (offset_distance meters from helipad)
@@ -411,7 +413,6 @@ class OilRigGuidance:
         bearing_rad = radians(bearing)
         
         # Calculate approach point coordinates
-        # This is the point offset_distance meters away from helipad in the opposite direction
         approach_lat_rad = asin(
             sin(helipad_lat_rad) * cos(angular_distance) +
             cos(helipad_lat_rad) * sin(angular_distance) * cos(bearing_rad + 3.14159)
@@ -425,33 +426,17 @@ class OilRigGuidance:
         approach_lat = degrees(approach_lat_rad)
         approach_lon = degrees(approach_lon_rad)
         
-        print(f"Calculated approach point: {approach_lat}, {approach_lon}, alt: {approach_alt}m")
+        print("\n=== Approach Point Calculated ===")
+        print(f"Approach position: lat={approach_lat:.6f}, lon={approach_lon:.6f}, alt={approach_alt}m")
         
         # Command vehicle to approach point
         if not self.set_guided_waypoint(approach_lat, approach_lon, approach_alt):
-            print("Failed to set approach waypoint")
+            print("Failed to reach approach point")
             return False
             
-        # Monitor progress
-        print("Monitoring approach...")
-        while True:
-            current_pos = self.get_current_position()
-            distance_to_target, _ = self.get_distance_bearing(
-                current_pos['lat'],
-                current_pos['lon'],
-                approach_lat,
-                approach_lon
-            )
-            
-            print(f"Distance to approach point: {distance_to_target:.1f}m")
-            
-            # Check if we've reached the approach point (within 5 meters)
-            if distance_to_target < 5:
-                print("Reached approach point")
-                return True
-                
-            time.sleep(1)  # Update every second
-            
+        print("\n=== Approach Complete ===")
+        print("Vehicle in position for final approach")
+        print("Waiting for alignment confirmation...")
         return True
 
     # TODO: Add more methods for oil rig specific operations
