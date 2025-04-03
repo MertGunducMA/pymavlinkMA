@@ -96,7 +96,7 @@ def main():
     # Mission parameters
     HELIPAD_LAT = 51.502051
     HELIPAD_LON = -0.770180
-    HELIPAD_HEADING = 125.0
+    HELIPAD_HEADING = 320.0
     TAKEOFF_ALT = 20.0
     APPROACH_ALT = 20.0
     ALIGNMENT_ALT = 20.0
